@@ -2,12 +2,12 @@
 
 Anqa is a data standard for time-frequency annotated wildlife sound files. An example can be found [here](https://www.kaggle.com/datasets/ollypowell/nz-wild-sound)
 
-The goal for this project is to encourage regional institutions to produce and share strongly labelled regional datasets, to a common standard, enabling better regional models.
+The goal for this project is to encourage regional institutions to produce and share strongly labelled regional datasets, to a common standard, enabling better regional models and local capacity building.
 
 ## Principles
 
 * **Tabular** annotation format
-* **Metadata first** - One row per audio file, including lat, long in web-mercator coordinates and a date-time stamp in ISO 8601.  The metadata should follow any files subsequently derived from the source files.
+* **Metadata first** - One row per audio file, including lat, long in WGS84 coordinates and a date-time stamp in ISO 8601.  The metadata should follow any files subsequently derived from the source files.
 * **Labels are to be in a separate file**, with one row per label, with a many to one relationship with the metadata file, matching by relative file name.
 * **e-bird** labels for birds, defaulting to **inaturalist** codes where no e-bird label is available
 * **Every animal** sound must get a time-frequency box.  Where the species can not be identified, fall back to a higher taxonomic order.  For example insects should use 47158.
@@ -16,9 +16,9 @@ The goal for this project is to encourage regional institutions to produce and s
 * **Modularity** - It should be possible to merge any two datasets programatically, whilst keeping the above properties
 * **Open Source** CC-BY licence, where no licence already exists for a given row-item in the metadata
 
-Whilst open-sourcing the training data, regional institutions should also be encouraged to make careful use of the metadata to create and hold back independent test sets for model calibration.
+Whilst open-sourcing the training data, regional institutions should also be encouraged to make careful use of the metadata to create and hold back independent test sets for model calibration.  By this I mean test data that comes from different date/time/location to the training data.  The specific requirement for 'differentness' is something I am still working on.
 
-By creating models that also predict time-frequency boxes in the same format, we enable model calibration, scaling and continuous improvement of the datasets through human-in-loop reviewing.
+By creating models that also predict time-frequency boxes in the same format, we enable efficient data reviewing, model calibration, scaling and continuous improvement of the datasets through human-in-loop review.
 
 <img src=".//images/anqa_diagram.png" width="900">
 
@@ -37,8 +37,7 @@ The Xeno-Canto/BirdCLEF format has a number of shortcomings:
 
 * It is hard to build strong models from training on the inherently weak-labelling in the Xeno-Canto data.  A large proportion of this data contains false negatives, whilst the training routine has no way to ensure sub-sampling contains sound the expected classes, leading to false positives during training.
 
-A better value-proposition is for regional institutions to use their own experts to create strongly labelled datasets.  Then for the rest of time a world-leading model is just a code-fork away.
-
+A better value-proposition is for regional institutions to use their own experts to create strongly labelled datasets.  Then for the rest of time a world-leading model is just a code-fork away.  This enables the building of local capacity and continuity rather than relying on big-tech offerings.
 
 ## Proposed Columns
 
