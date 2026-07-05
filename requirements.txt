@@ -1,0 +1,8 @@
+contextily
+librosa
+matplotlib
+numpy
+pandas
+pyarrow
+scipy
+sounddevice

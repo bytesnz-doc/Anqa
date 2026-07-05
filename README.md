@@ -4,6 +4,33 @@ Anqa is a data standard for time-frequency annotated wildlife sound files. An ex
 
 The goal for this project is to encourage regional institutions to produce and share strongly labelled regional datasets, to a common standard, enabling better regional models and local capacity building.
 
+## Windows desktop app (no Jupyter required)
+
+You can run the annotator as a normal desktop app and package it into a single Windows `.exe`.
+
+1. Install dependencies:
+   ```powershell
+   py -m pip install -r requirements.txt pyinstaller
+   ```
+2. Run the desktop app from source:
+   ```powershell
+   py run_anqa_desktop.py
+   ```
+3. Build a single executable:
+   ```powershell
+   .\build_exe.ps1
+   ```
+4. Run:
+   ```powershell
+   .\dist\anqa-annotator.exe
+   ```
+
+The launcher asks for:
+- source dataset folder (must contain `metadata.parquet` and `annotations.parquet`)
+- audio folder
+- reviewed output folder
+- naming CSV (must include `CommonName` and `eBird` columns)
+
 ## Principles
 
 * **Tabular** annotation format

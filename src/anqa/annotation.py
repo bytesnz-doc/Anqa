@@ -6,20 +6,41 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import display, HTML
-import ipywidgets as widgets
-button = widgets.Button(description="Continue")
-output = widgets.Output()
+try:
+    from IPython.display import display, HTML
+except Exception:
+    def display(*_args, **_kwargs):
+        return None
+
+    def HTML(value):
+        return value
+
+try:
+    import ipywidgets as widgets
+except Exception:
+    widgets = None
 import librosa
 import time
 import matplotlib.gridspec as gridspec
 import threading
-import contextily as cx
+try:
+    import contextily as cx
+except Exception:
+    cx = None
 from scipy.signal import butter, filtfilt, resample_poly, find_peaks
 from math import gcd
 from threading import Timer
 from dataclasses import dataclass
 import sounddevice as sd
+
+
+def _can_use_ipywidgets_canvas(fig) -> bool:
+    """True when running with an ipympl canvas that supports widget layout."""
+    try:
+        _ = fig.canvas.layout
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -289,13 +310,15 @@ class FastMap:
 
     def __init__(
         self,
-        provider=cx.providers.OpenStreetMap.Mapnik,
+        provider=None,
         #provider: dict = cx.providers["OpenStreetMap"]["Mapnik"],
         figsize=(3, 3),
         ax=None,
         map_extents=None,
         web_mercator_extents=None        # e.g. {'min_x': ..., 'max_x': ..., 'min_y': ..., 'max_y': ...}
     ):
+        if provider is None and cx is not None:
+            provider = cx.providers.OpenStreetMap.Mapnik
         self.provider = provider
 
         if web_mercator_extents is not None:
@@ -336,7 +359,8 @@ class FastMap:
         self.ax.set_yticks([])
         self.ax.set_aspect('equal', adjustable='box')
 
-        cx.add_basemap(self.ax, source=self.provider, zoom='auto')
+        if cx is not None and self.provider is not None:
+            cx.add_basemap(self.ax, source=self.provider, zoom='auto')
 
         self.ax.plot(
             [self.min_x, self.max_x, self.max_x, self.min_x, self.min_x],
@@ -712,16 +736,17 @@ def optimal_stft_params(
     return n_fft, hop_length, window_duration, freq_resolution
 
 
-def play_audio_standalone(wav_segment, sr):
+def play_audio_standalone(wav_segment, sr, peak_reference=None):
     """
     Play a numpy array via system audio, non-blocking.
     wav_segment: 1D numpy float32 array
     sr: sample rate
     """
     wav_segment = wav_segment.astype(np.float32)
-    max_amp = np.abs(wav_segment).max()
-    if max_amp > 0:
-        wav_segment = wav_segment / max_amp
+    if peak_reference is None:
+        peak_reference = np.abs(wav_segment).max()
+    if peak_reference > 0:
+        wav_segment = wav_segment / peak_reference
 
     sd.stop()  # kill any current playback
     sd.play(wav_segment, samplerate=sr)
@@ -930,6 +955,7 @@ class SpectrogramAnnotator:
         self.filepath = None
         self.meta_row = None
         self.label_rows = None
+        self._audio_peak_reference = 1.0
 
         # --- build figure ---
         self._interactive_state = plt.isinteractive()
@@ -959,18 +985,23 @@ class SpectrogramAnnotator:
         if self._interactive_state:
             plt.ion()
 
-        # --- persistent audio widget ---
-        self.audio_output = widgets.Output(
-            layout=widgets.Layout(
-                width="800px",
-                margin="0 0 0 35px"
-            )
-        )
+        # --- notebook-only widget container (desktop fallback below) ---
+        self.audio_output = None
+        self.container = None
+        self._notebook_ui = _can_use_ipywidgets_canvas(self.fig)
 
-        # --- persistent container ---
-        self.container = widgets.VBox([self.fig.canvas, self.audio_output])
-        display(self.container)
-        display(HTML("<style>audio { width: 800px; margin-left: 35px; }</style>"))
+        if self._notebook_ui and widgets is not None:
+            self.audio_output = widgets.Output(
+                layout=widgets.Layout(
+                    width="800px",
+                    margin="0 0 0 35px"
+                )
+            )
+            self.container = widgets.VBox([self.fig.canvas, self.audio_output])
+            display(self.container)
+            display(HTML("<style>audio { width: 800px; margin-left: 35px; }</style>"))
+        else:
+            plt.show(block=False)
 
     # ----------------------------
     # File loading
@@ -999,6 +1030,7 @@ class SpectrogramAnnotator:
         )
         self.t_marker = self.data.duration_seconds / 2
         self.f_marker = self.data.n_rows / 2
+        self._audio_peak_reference = max(float(np.abs(self.data.wav).max()), 1e-12)
 
     # ----------------------------
     # Audio / playhead
@@ -1012,9 +1044,20 @@ class SpectrogramAnnotator:
         start_sample = int(start_time * sr)
         wav_segment = self.data.wav[start_sample:]
 
-        with self.audio_output:
-            self.audio_output.clear_output(wait=True)
-            play_audio_standalone(wav_segment=wav_segment, sr=sr)
+        if self.audio_output is not None:
+            with self.audio_output:
+                self.audio_output.clear_output(wait=True)
+                play_audio_standalone(
+                    wav_segment=wav_segment,
+                    sr=sr,
+                    peak_reference=self._audio_peak_reference,
+                )
+        else:
+            play_audio_standalone(
+                wav_segment=wav_segment,
+                sr=sr,
+                peak_reference=self._audio_peak_reference,
+            )
 
         self._start_playhead(start_time=start_time)
 
@@ -1067,7 +1110,10 @@ class SpectrogramAnnotator:
     # ----------------------------
 
     def display(self):
-        return self.container
+        if self.container is not None:
+            return self.container
+        plt.show(block=False)
+        return self.fig
 
     def _render(self):
         self.ax_spec.clear()
@@ -1170,7 +1216,8 @@ class SpectrogramAnnotator:
             ncol=2
         )
 
-        self.fig.canvas.header_visible = False
+        if hasattr(self.fig.canvas, "header_visible"):
+            self.fig.canvas.header_visible = False
         self.ax_spec.set_xlim(0, d.duration_seconds)
         self.fig.canvas.draw_idle()
 
@@ -1283,7 +1330,8 @@ class SpectrogramAnnotator:
         self.ax_side.set_yticks(yticks)
         self.ax_side.set_yticklabels([f"{f:.0f}" for f in yticks])
         self.ax_side.set_xlabel("Time (s)")
-        self.fig.canvas.header_visible = False
+        if hasattr(self.fig.canvas, "header_visible"):
+            self.fig.canvas.header_visible = False
         self.fig.canvas.draw_idle()
 
 
@@ -2022,8 +2070,12 @@ class AnnotationSession:
         #                'longitude', 'author', 'license', 'recorded_on', 'reviewed_by', 'reviewed_on', 
         #                'source_filename', 'source_start_s', 'source_end_s', 'models_used']
 
-        # Copy to avoid modifying original
+        # Copy to avoid modifying original and coerce metadata dtypes
         self.df_meta = df_meta.copy()
+        for col in self.meta_headers:
+            if col not in self.df_meta.columns:
+                self.df_meta[col] = pd.NA
+        self.df_meta = self.meta_schema.apply(self.df_meta)
         self.df_meta["status"] = "pending"
 
         self.df_labels = df_labels.copy() if df_labels is not None else pd.DataFrame(columns=self.label_headers)
@@ -2154,7 +2206,7 @@ class AnnotationSession:
         # ---- Update metadata ----
         self.df_meta.at[file_idx, "status"] = "done"
         self.df_meta.at[file_idx, "author"] = self.author
-        self.df_meta.at[file_idx, "reviewed_on"] = date.today()
+        self.df_meta.at[file_idx, "reviewed_on"] = pd.Timestamp(date.today())
         self.df_meta.at[file_idx, "reviewed_by"] = self.reviewer
 
         # ---- Persist only completed rows ----
@@ -2181,7 +2233,7 @@ class AnnotationSession:
 
         # Reset metadata status
         self.df_meta.at[last_file, "status"] = "pending"
-        self.df_meta.at[last_file, "reviewed_on"] = pd.NA
+        self.df_meta.at[last_file, "reviewed_on"] = pd.NaT
         self.df_meta.at[last_file, "reviewed_by"] = pd.NA
 
         # Remove labels for that file
@@ -2282,20 +2334,23 @@ def load_current_sample(session, annotator, paths, map_widget):
     # --- update visible classes if changed ---
     annotation_state.set_visible_classes(visible)
 
-    # update radio options
-    options = [
-        (f"{c} ({annotation_state.common_to_ebird.get(c, '')})", c)
-        for c in visible
-    ]
-    annotation_state.radio_class.options = options
+    if hasattr(annotation_state, 'radio_class') and annotation_state.radio_class is not None:
+        # update radio options
+        options = [
+            (f"{c} ({annotation_state.common_to_ebird.get(c, '')})", c)
+            for c in visible
+        ]
+        annotation_state.radio_class.options = options
 
-    # --- safely assign selected value (primary only) ---
-    if primary_cls is not None:
-        def set_value():
-            annotation_state.radio_class.value = primary_cls
-            annotation_state.current_label = primary_cls
+        # --- safely assign selected value (primary only) ---
+        if primary_cls is not None:
+            def set_value():
+                annotation_state.radio_class.value = primary_cls
+                annotation_state.current_label = primary_cls
 
-        Timer(0.01, set_value).start()
+            Timer(0.01, set_value).start()
+    elif primary_cls is not None:
+        annotation_state.current_label = primary_cls
 
     # --- update map ---
     map_widget.update(
