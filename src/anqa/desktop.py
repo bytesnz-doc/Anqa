@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -212,6 +213,8 @@ class AnnotationDesktopWindow(tk.Toplevel):
 
 
 class LauncherApp(tk.Tk):
+    SETTINGS_PATH = Path.home() / ".anqa" / "launcher-settings.json"
+
     def __init__(self):
         super().__init__()
         self.title("Anqa Launcher")
@@ -229,6 +232,7 @@ class LauncherApp(tk.Tk):
         self.naming_var = tk.StringVar()
         self.author_var = tk.StringVar()
         self.reviewer_var = tk.StringVar()
+        self._load_saved_paths()
 
         self._path_row(frame, "Source dataset folder", self.source_var, folder=True)
         self._path_row(frame, "Audio folder", self.audio_var, folder=True)
@@ -239,6 +243,29 @@ class LauncherApp(tk.Tk):
         self._entry_row(frame, "Reviewer", self.reviewer_var)
 
         ttk.Button(frame, text="Start annotation", command=self._start).pack(anchor="e", pady=(12, 0))
+
+    def _load_saved_paths(self):
+        try:
+            if not self.SETTINGS_PATH.exists():
+                return
+            settings = json.loads(self.SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        self.source_var.set(settings.get("source_dataset", ""))
+        self.audio_var.set(settings.get("audio_folder", ""))
+        self.reviewed_var.set(settings.get("reviewed_dataset", ""))
+        self.naming_var.set(settings.get("naming_csv", ""))
+
+    def _save_paths(self, source_dataset: Path, audio_folder: Path, reviewed_dataset: Path, naming_csv: Path):
+        settings = {
+            "source_dataset": str(source_dataset),
+            "audio_folder": str(audio_folder),
+            "reviewed_dataset": str(reviewed_dataset),
+            "naming_csv": str(naming_csv),
+        }
+        self.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     def _path_row(self, parent, label, var: tk.StringVar, folder: bool):
         row = ttk.Frame(parent)
@@ -292,6 +319,13 @@ class LauncherApp(tk.Tk):
                 raise FileNotFoundError(f"Missing metadata file: {paths.original_metadata}")
             if not paths.original_labels.exists():
                 raise FileNotFoundError(f"Missing annotations file: {paths.original_labels}")
+
+            self._save_paths(
+                source_dataset=source_dataset,
+                audio_folder=audio_folder,
+                reviewed_dataset=reviewed_dataset,
+                naming_csv=naming_csv,
+            )
 
             author = self.author_var.get().strip() or None
             reviewer = self.reviewer_var.get().strip() or None
