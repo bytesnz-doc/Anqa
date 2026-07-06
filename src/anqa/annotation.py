@@ -22,7 +22,6 @@ except Exception:
 import librosa
 import time
 import matplotlib.gridspec as gridspec
-import threading
 try:
     import contextily as cx
 except Exception:
@@ -407,7 +406,7 @@ class FastMap:
 
     def display(self):
         if self._owns_figure:
-            plt.show()
+            plt.show(block=False)
         if self._interactive_state:
             plt.ion()
 
@@ -949,6 +948,7 @@ class SpectrogramAnnotator:
         self.playhead_power = None
         self.playhead_spec = None
         self.playhead_zoom = None
+        self._playhead_timer = None
 
         # --- file state ---
         self.file_loaded = False
@@ -956,6 +956,7 @@ class SpectrogramAnnotator:
         self.meta_row = None
         self.label_rows = None
         self._audio_peak_reference = 1.0
+        self.play_selected_on_right_click = False
 
         # --- build figure ---
         self._interactive_state = plt.isinteractive()
@@ -1036,13 +1037,22 @@ class SpectrogramAnnotator:
     # Audio / playhead
     # ----------------------------
 
-    def _play_audio(self, start_time=0.0):
+    def _play_audio(self, start_time=0.0, end_time=None):
+        if self.data is None or self.meta_row is None:
+            return
+
         sr = self.meta_row.get("sample_rate", None)
         if sr is None:
             sr = librosa.get_samplerate(self.filepath)
 
         start_sample = int(start_time * sr)
-        wav_segment = self.data.wav[start_sample:]
+        if end_time is None:
+            wav_segment = self.data.wav[start_sample:]
+        else:
+            end_sample = int(max(start_time, end_time) * sr)
+            wav_segment = self.data.wav[start_sample:end_sample]
+        if wav_segment.size == 0:
+            return
 
         if self.audio_output is not None:
             with self.audio_output:
@@ -1059,51 +1069,60 @@ class SpectrogramAnnotator:
                 peak_reference=self._audio_peak_reference,
             )
 
-        self._start_playhead(start_time=start_time)
+        self._start_playhead(start_time=start_time, end_time=end_time)
 
-    def _start_playhead(self, start_time=0.0, interval=0.2):
-        # Generation counter — stale threads exit cleanly without shared mutable flags
+    def _start_playhead(self, start_time=0.0, end_time=None, interval=0.2):
+        self._stop_playhead_timer()
+
+        # Generation counter — stale callbacks exit cleanly without shared mutable flags
         self._playhead_gen = getattr(self, "_playhead_gen", 0) + 1
         my_gen = self._playhead_gen
+        play_end = self.data.duration_seconds if end_time is None else min(end_time, self.data.duration_seconds)
 
         self._play_start_wall  = time.time()
         self._play_start_audio = start_time
 
-        def update_loop(interval=interval):
-            while self._playhead_gen == my_gen:
-                if (
-                    self.playhead_spec is None
-                    or self.playhead_power is None
-                    or self.fig is None
-                ):
-                    break
+        interval_ms = max(30, int(interval * 1000))
+        self._playhead_timer = self.fig.canvas.new_timer(interval=interval_ms)
 
-                elapsed      = time.time() - self._play_start_wall
-                current_time = self._play_start_audio + elapsed
+        def update_loop():
+            if self._playhead_gen != my_gen:
+                self._stop_playhead_timer()
+                return
+            if self.playhead_spec is None or self.playhead_power is None or self.fig is None:
+                self._stop_playhead_timer()
+                return
 
-                if current_time > self.data.duration_seconds:
-                    current_time = self.data.duration_seconds
-                    self.playhead_spec.set_xdata([current_time])
-                    self.playhead_power.set_xdata([current_time])
-                    if self.playhead_zoom is not None:
-                        self.playhead_zoom.set_xdata([current_time])
-                    self.fig.canvas.draw_idle()
-                    self.fig.canvas.flush_events()
-                    break
+            elapsed = time.time() - self._play_start_wall
+            current_time = self._play_start_audio + elapsed
+            done = current_time >= play_end
+            if done:
+                current_time = play_end
 
-                try:
-                    self.playhead_spec.set_xdata([current_time])
-                    self.playhead_power.set_xdata([current_time])
-                    if self.playhead_zoom is not None:
-                        self.playhead_zoom.set_xdata([current_time])
-                    self.fig.canvas.draw_idle()
-                    self.fig.canvas.flush_events()
-                except Exception:
-                    break
+            try:
+                self.playhead_spec.set_xdata([current_time])
+                self.playhead_power.set_xdata([current_time])
+                if self.playhead_zoom is not None:
+                    self.playhead_zoom.set_xdata([current_time])
+                self.fig.canvas.draw_idle()
+            except Exception:
+                self._stop_playhead_timer()
+                return
 
-                time.sleep(interval)
+            if done:
+                self._stop_playhead_timer()
 
-        threading.Thread(target=update_loop, daemon=True).start()
+        self._playhead_timer.add_callback(update_loop)
+        self._playhead_timer.start()
+        update_loop()
+
+    def _stop_playhead_timer(self):
+        if self._playhead_timer is not None:
+            try:
+                self._playhead_timer.stop()
+            except Exception:
+                pass
+            self._playhead_timer = None
 
     # ----------------------------
     # Rendering
@@ -1116,6 +1135,7 @@ class SpectrogramAnnotator:
         return self.fig
 
     def _render(self):
+        self._stop_playhead_timer()
         self.ax_spec.clear()
         self.ax_power.clear()
         self.centre_dot    = None
@@ -1998,9 +2018,13 @@ class SpectrogramAnnotator:
             self.f_marker = f_marker
 
             self.centre_dot.set_data([self.t_marker], [self.f_marker])
-            self._play_audio(start_time=self.t_marker)
             self._render_zoom()
             self.fig.canvas.draw_idle()
+
+            if self.play_selected_on_right_click:
+                self.play_selected_section()
+            else:
+                self.play_from_marker()
 
 
     def _on_keypress(self, event):
@@ -2025,6 +2049,24 @@ class SpectrogramAnnotator:
     def clear_annotations(self):
         self.annotations.clear()
         self.fig.canvas.draw_idle()
+
+    def play_from_marker(self):
+        if self.data is None:
+            return
+        start_time = float(np.clip(self.t_marker, 0, self.data.duration_seconds))
+        self._play_audio(start_time=start_time)
+
+    def play_selected_section(self):
+        if self.data is None:
+            return
+        start_time = float(np.clip(self.t_marker, 0, self.data.duration_seconds))
+        end_time = min(start_time + self.zoom_window_width, self.data.duration_seconds)
+        self._play_audio(start_time=start_time, end_time=end_time)
+
+    def stop_audio(self):
+        sd.stop()
+        self._playhead_gen = getattr(self, "_playhead_gen", 0) + 1
+        self._stop_playhead_timer()
 
     def get_boxes(self):
         return self.annotations.boxes
