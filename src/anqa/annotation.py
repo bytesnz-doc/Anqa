@@ -939,6 +939,7 @@ class SpectrogramAnnotator:
         # --- drag state ---
         self._drag_rect = None
         self._drag_start = None
+        self._drag_button = None
 
         # --- zoom rect (drawn on ax_spec) ---
         self.zoom_rect = None
@@ -1480,8 +1481,11 @@ class SpectrogramAnnotator:
         return xmin, xmax, ymin_idx, ymax_idx, ymin_hz, ymax_hz
 
     def _on_drag_start(self, event):
-        if event.button != 1:
+        if event.inaxes != self.ax_spec:
             return
+        if event.button not in (1, 3):
+            return
+        self._drag_button = event.button
         self._drag_start = self._event_to_data(event)
         self._drag_start_screen = (event.x, event.y)  # store screen coords too
         self._drag_moved = False
@@ -1506,10 +1510,11 @@ class SpectrogramAnnotator:
             (xmin, ymin_idx),
             xmax - xmin,
             ymax_idx - ymin_idx,
-            edgecolor='lime',
-            facecolor='lime',
-            alpha=0.25,
+            edgecolor='cyan' if self._drag_button == 3 else 'lime',
+            facecolor='none' if self._drag_button == 3 else 'lime',
+            alpha=1.0 if self._drag_button == 3 else 0.25,
             linewidth=2,
+            linestyle='--' if self._drag_button == 3 else '-',
             zorder=15,
         )
 
@@ -1545,9 +1550,11 @@ class SpectrogramAnnotator:
         if self._drag_start is None:
             self._drag_moved = False
             self._drag_start = None
+            self._drag_button = None
             return
 
         x0, y0 = self._drag_start
+        drag_button = self._drag_button
 
         # --- Determine click vs drag from actual pixel distance, not motion events ---
         dx = abs(event.x - self._drag_start_screen[0])
@@ -1556,11 +1563,51 @@ class SpectrogramAnnotator:
 
         x1, y1 = self._event_to_data(event)
 
+        if drag_button == 3:
+            if is_click:
+                x_click, y_click = self._event_to_data(event)
+                max_marker = self.data.duration_seconds - self.zoom_window_width
+                t_marker   = np.clip(x_click, 0, max_marker)
+
+                half_height = self.zoom_window_height * self.n_mels / 2
+                f_marker    = np.clip(y_click, half_height, self.n_mels - half_height)
+
+                self.t_marker = t_marker
+                self.f_marker = f_marker
+
+                self.centre_dot.set_data([self.t_marker], [self.f_marker])
+                self._render_zoom()
+                self.fig.canvas.draw_idle()
+
+                if self.play_selected_on_right_click:
+                    self.play_selected_section()
+                else:
+                    self.play_from_marker()
+            else:
+                xmin, xmax, _, _, ymin_hz, ymax_hz = self._snap_box(x0, y0, x1, y1)
+                f_mid_row = float(self.data.hz_to_row((ymin_hz + ymax_hz) / 2))
+                self.t_marker = float(np.clip(xmin, 0, self.data.duration_seconds))
+                self.f_marker = float(np.clip(f_mid_row, 0, self.data.n_rows - 1))
+                if self.centre_dot is not None:
+                    self.centre_dot.set_data([self.t_marker], [self.f_marker])
+                self._render_zoom()
+                self.play_time_frequency_box(xmin=xmin, xmax=xmax, ymin_hz=ymin_hz, ymax_hz=ymax_hz)
+
+            if self._drag_rect is not None:
+                self._drag_rect.remove()
+                self._drag_rect = None
+            self._drag_start = None
+            self._drag_moved = False
+            self._drag_button = None
+            self.fig.canvas.draw_idle()
+            return
+
         if is_click:
             # treat as a click: place last-used box centred on cursor
             if self._last_box_time is None or self._last_box_rows is None:
                 self._drag_start = None
                 self._drag_moved = False
+                self._drag_button = None
                 return
 
             cx, cy = self._event_to_data(event)
@@ -1577,6 +1624,7 @@ class SpectrogramAnnotator:
                     self._drag_rect = None
                 self._drag_start = None
                 self._drag_moved = False
+                self._drag_button = None
                 self.fig.canvas.draw_idle()
                 return
 
@@ -1641,6 +1689,7 @@ class SpectrogramAnnotator:
 
         self._drag_start = None
         self._drag_moved = False
+        self._drag_button = None
 
         # store shape for future click-placement
         self._last_box_time = xmax - xmin
@@ -2004,27 +2053,8 @@ class SpectrogramAnnotator:
     # ----------------------------
 
     def _on_click(self, event):
-        if event.button == 3:  # or len(self.annotations) > 0:
-            if event.inaxes != self.ax_spec:
-                return
-
-            max_marker = self.data.duration_seconds - self.zoom_window_width
-            t_marker   = np.clip(event.xdata, 0, max_marker)
-
-            half_height = self.zoom_window_height * self.n_mels / 2
-            f_marker    = np.clip(event.ydata, half_height, self.n_mels - half_height)
-
-            self.t_marker = t_marker
-            self.f_marker = f_marker
-
-            self.centre_dot.set_data([self.t_marker], [self.f_marker])
-            self._render_zoom()
-            self.fig.canvas.draw_idle()
-
-            if self.play_selected_on_right_click:
-                self.play_selected_section()
-            else:
-                self.play_from_marker()
+        # Right-click handling is done in drag-release so we can distinguish click vs drag.
+        return
 
 
     def _on_keypress(self, event):
@@ -2062,6 +2092,41 @@ class SpectrogramAnnotator:
         start_time = float(np.clip(self.t_marker, 0, self.data.duration_seconds))
         end_time = min(start_time + self.zoom_window_width, self.data.duration_seconds)
         self._play_audio(start_time=start_time, end_time=end_time)
+
+    def play_time_frequency_box(self, xmin: float, xmax: float, ymin_hz: float, ymax_hz: float):
+        if self.data is None:
+            return
+        if xmax <= xmin:
+            return
+
+        duration = max(0.01, xmax - xmin)
+        wav_segment, new_sr = zoom_in_on_wav(
+            self.data.wav,
+            x_left=xmin,
+            f_min_hz=ymin_hz,
+            f_max_hz=ymax_hz,
+            times=self.data.time_axis,
+            window_width=duration,
+            sr=self.data.sr,
+        )
+        if wav_segment.size == 0:
+            return
+
+        if self.audio_output is not None:
+            with self.audio_output:
+                self.audio_output.clear_output(wait=True)
+                play_audio_standalone(
+                    wav_segment=wav_segment,
+                    sr=new_sr,
+                    peak_reference=self._audio_peak_reference,
+                )
+        else:
+            play_audio_standalone(
+                wav_segment=wav_segment,
+                sr=new_sr,
+                peak_reference=self._audio_peak_reference,
+            )
+        self._start_playhead(start_time=xmin, end_time=xmax)
 
     def stop_audio(self):
         sd.stop()
