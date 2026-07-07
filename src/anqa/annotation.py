@@ -1137,13 +1137,13 @@ class SpectrogramAnnotator:
 
     def _render(self):
         self._stop_playhead_timer()
+        self.annotations.clear()
         self.ax_spec.clear()
         self.ax_power.clear()
         self.centre_dot    = None
         self.playhead_power = None
         self.playhead_spec  = None
         self.zoom_rect      = None
-        self.annotations.clear()
 
         d = self.data
         t_power  = np.linspace(0, d.duration_seconds, len(d.power))
