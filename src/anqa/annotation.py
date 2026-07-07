@@ -2190,7 +2190,10 @@ class AnnotationSession:
         # Restore completed files if saved
         done_filenames = []
         if self.new_meta_filepath.exists():
-            df_meta_done = pd.read_parquet(self.new_meta_filepath)
+            try:
+                df_meta_done = pd.read_parquet(self.new_meta_filepath)
+            except Exception:
+                df_meta_done = pd.DataFrame(columns=self.meta_headers)
             done_filenames = df_meta_done['filename']
             mask = self.df_meta['filename'].isin(done_filenames)
             self.df_meta.loc[mask, 'status'] = 'done'
@@ -2198,7 +2201,10 @@ class AnnotationSession:
 
         # Restore completed labels if saved (robust merge)
         if self.new_labels_filepath.exists():
-            df_labels_done = pd.read_parquet(self.new_labels_filepath)
+            try:
+                df_labels_done = pd.read_parquet(self.new_labels_filepath)
+            except Exception:
+                df_labels_done = pd.DataFrame(columns=self.label_headers)
 
             # Identify completed files (from saved metadata if available)
             if self.new_meta_filepath.exists():
@@ -2361,6 +2367,9 @@ class AnnotationSession:
     # -----------------------------
     def _save(self, filepath, df):
         tmp = filepath.with_suffix(".tmp.parquet")
+        df = df.copy()
+        for col in df.select_dtypes(include=["datetime64"]):
+            df[col] = df[col].astype("datetime64[ms]")
         df.to_parquet(tmp, index=False)
         tmp.replace(filepath)
 
@@ -2372,7 +2381,7 @@ class AnnotationSession:
         total_boxes = len(self.df_labels)
         done = (self.df_meta["status"] == "done").sum()
         pending = (self.df_meta["status"] == "pending").sum()
-        finished_files = pd.read_parquet(self.new_meta_filepath)["filename"].nunique() if self.new_meta_filepath.exists() else 0
+        finished_files = done
 
         return {
             "total_files": total,
