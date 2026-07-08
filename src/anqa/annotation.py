@@ -868,6 +868,15 @@ class AnnotationStore:
         self._text_artists.pop().remove()
         return True
 
+    def remove_at(self, index):
+        self.boxes.pop(index)
+        self._box_artists.pop(index).remove()
+        self._text_artists.pop(index).remove()
+
+    def update_label_at(self, index, ebird_label):
+        self.boxes[index]['Label'] = ebird_label
+        self._text_artists[index].set_text(ebird_label)
+
     def clear(self):
         while self._box_artists:
             self._box_artists.pop().remove()
@@ -2302,10 +2311,12 @@ class AnnotationSession:
 
         file_idx = self._current_index
 
-        # ---- Update labels ----
+        # ---- Update labels (replace existing) ----
         if boxes:
             new_labels = pd.DataFrame(boxes)
             new_labels['Filename'] = file_idx
+
+            self.df_labels = self.df_labels[self.df_labels['Filename'] != file_idx]
 
             new_labels = normalise_labels_df(new_labels, self.label_headers)
             self.df_labels = normalise_labels_df(self.df_labels, self.label_headers)

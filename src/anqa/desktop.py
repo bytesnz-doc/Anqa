@@ -130,7 +130,7 @@ class AnnotationDesktopWindow(tk.Toplevel):
         )
 
         self.annotator.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
-        self.annotator.fig.canvas.mpl_connect("draw_event", lambda e: self.after_idle(self._set_label_value))
+        self.annotator.fig.canvas.mpl_connect("draw_event", lambda e: self.after_idle(self._on_redraw))
 
     def _build_controls(self):
         frame = ttk.Frame(self, padding=12)
@@ -164,6 +164,41 @@ class AnnotationDesktopWindow(tk.Toplevel):
         self.label_combo.pack(side="left", padx=(8, 6))
         self.label_combo.bind("<<ComboboxSelected>>", self._on_label_changed)
         ttk.Button(new_class_row, text="Undo", command=self._undo_box).pack(side="left")
+
+        annotations_frame = ttk.LabelFrame(frame, text="Annotations")
+        annotations_frame.pack(fill="x", pady=(0, 10))
+
+        self.annotations_tree = ttk.Treeview(
+            annotations_frame,
+            columns=("class", "start", "end", "low_freq", "high_freq"),
+            show="headings",
+            height=6,
+        )
+        self.annotations_tree.heading("class", text="Class")
+        self.annotations_tree.heading("start", text="Start (s)")
+        self.annotations_tree.heading("end", text="End (s)")
+        self.annotations_tree.heading("low_freq", text="Low (Hz)")
+        self.annotations_tree.heading("high_freq", text="High (Hz)")
+        self.annotations_tree.column("class", width=180)
+        self.annotations_tree.column("start", width=70)
+        self.annotations_tree.column("end", width=70)
+        self.annotations_tree.column("low_freq", width=70)
+        self.annotations_tree.column("high_freq", width=70)
+        self.annotations_tree.pack(fill="x", padx=8, pady=(8, 4))
+        self.annotations_tree.bind("<<TreeviewSelect>>", self._on_annotation_selected)
+
+        annot_btn_row = ttk.Frame(annotations_frame)
+        annot_btn_row.pack(fill="x", padx=8, pady=(0, 8))
+
+        self.change_label_combo = ttk.Combobox(
+            annot_btn_row,
+            values=self.annotation_state.get_all_classes(),
+            state="readonly",
+            width=25,
+        )
+        self.change_label_combo.pack(side="left", padx=(0, 6))
+        self.change_label_combo.bind("<<ComboboxSelected>>", self._update_selected_label)
+        ttk.Button(annot_btn_row, text="Remove", command=self._remove_selected_annotation).pack(side="left")
 
         meta_frame = ttk.LabelFrame(frame, text="Annotation metadata")
         meta_frame.pack(fill="x", pady=(0, 10))
@@ -220,19 +255,39 @@ class AnnotationDesktopWindow(tk.Toplevel):
 
     def _on_sex_changed(self, _event=None):
         value = self.sex_combo.get()
-        self.annotation_state.sex = None if value == "Leave Empty" else value
+        selected = self.annotations_tree.selection()
+        if selected:
+            idx = int(selected[0])
+            self.annotator.annotations.boxes[idx]['Sex'] = None if value == "Leave Empty" else value
+        else:
+            self.annotation_state.sex = None if value == "Leave Empty" else value
 
     def _on_life_stage_changed(self, _event=None):
         value = self.life_stage_combo.get()
-        self.annotation_state.life_stage = None if value == "Leave Empty" else value
+        selected = self.annotations_tree.selection()
+        if selected:
+            idx = int(selected[0])
+            self.annotator.annotations.boxes[idx]['Life Stage'] = None if value == "Leave Empty" else value
+        else:
+            self.annotation_state.life_stage = None if value == "Leave Empty" else value
 
     def _on_call_type_changed(self, _event=None):
         value = self.call_type_combo.get()
-        self.annotation_state.call_type = None if value == "Leave Empty" else value
+        selected = self.annotations_tree.selection()
+        if selected:
+            idx = int(selected[0])
+            self.annotator.annotations.boxes[idx]['Type'] = None if value == "Leave Empty" else value
+        else:
+            self.annotation_state.call_type = None if value == "Leave Empty" else value
 
     def _on_score_changed(self, _event=None):
         value = self.score_combo.get()
-        self.annotation_state.score = None if value == "Leave Empty" else float(value)
+        selected = self.annotations_tree.selection()
+        if selected:
+            idx = int(selected[0])
+            self.annotator.annotations.boxes[idx]['Score'] = None if value == "Leave Empty" else float(value)
+        else:
+            self.annotation_state.score = None if value == "Leave Empty" else float(value)
 
     def _set_metadata_controls(self):
         self.sex_combo.set(self.annotation_state.sex or "Leave Empty")
@@ -282,6 +337,7 @@ class AnnotationDesktopWindow(tk.Toplevel):
 
         load_current_sample(self.session, self.annotator, self.paths, self.map_widget)
         self._set_label_value()
+        self._update_annotations_list()
         self._set_metadata_controls()
         self._update_summary()
         self._update_file_combobox()
@@ -335,6 +391,80 @@ class AnnotationDesktopWindow(tk.Toplevel):
     def _undo_box(self):
         if self.annotator.annotations.undo():
             self.annotator.fig.canvas.draw_idle()
+
+    def _on_redraw(self):
+        self._set_label_value()
+        self._update_annotations_list()
+
+    def _update_annotations_list(self):
+        tree = self.annotations_tree
+        selected = tree.selection()
+        self._updating_tree = True
+        for item in tree.get_children():
+            tree.delete(item)
+
+        ebird_to_common = self.annotation_state.ebird_to_common
+        for i, box in enumerate(self.annotator.annotations.boxes):
+            common = ebird_to_common.get(box.get('Label', ''), box.get('Label', ''))
+            tree.insert("", "end", iid=str(i), values=(
+                common,
+                f"{box.get('Start Time (s)', 0):.1f}",
+                f"{box.get('End Time (s)', 0):.1f}",
+                f"{box.get('Low Freq (Hz)', 0):.0f}",
+                f"{box.get('High Freq (Hz)', 0):.0f}",
+            ))
+
+        if selected and tree.exists(selected[0]):
+            tree.selection_set(selected[0])
+        self._updating_tree = False
+
+    def _on_annotation_selected(self, _event=None):
+        if getattr(self, '_updating_tree', False):
+            return
+        selected = self.annotations_tree.selection()
+        if not selected:
+            self.change_label_combo.set("")
+            self._set_metadata_controls()
+            return
+        idx = int(selected[0])
+        box = self.annotator.annotations.boxes[idx]
+
+        ebird = box.get('Label', '')
+        common = self.annotation_state.ebird_to_common.get(ebird, ebird)
+        self.change_label_combo.set(common)
+
+        for combo, value in (
+            (self.sex_combo, box.get('Sex') or "Leave Empty"),
+            (self.life_stage_combo, box.get('Life Stage') or "Leave Empty"),
+            (self.call_type_combo, box.get('Type') or "Leave Empty"),
+            (self.score_combo, "Leave Empty" if pd.isna(box.get('Score')) else str(box['Score'])),
+        ):
+            combo.set(value)
+            combo.icursor(0)
+
+    def _remove_selected_annotation(self):
+        selected = self.annotations_tree.selection()
+        if not selected:
+            return
+        idx = int(selected[0])
+        self.annotator.annotations.remove_at(idx)
+        self._update_annotations_list()
+        self.annotator.fig.canvas.draw_idle()
+
+    def _update_selected_label(self, _event=None):
+        selected = self.annotations_tree.selection()
+        if not selected:
+            return
+        idx = int(selected[0])
+        common = self.change_label_combo.get()
+        if not common:
+            return
+        ebird = self.annotation_state.common_to_ebird.get(common)
+        if not ebird:
+            return
+        self.annotator.annotations.update_label_at(idx, ebird)
+        self._update_annotations_list()
+        self.annotator.fig.canvas.draw_idle()
 
     def _play_from_cursor(self):
         self.annotator.play_from_marker()
