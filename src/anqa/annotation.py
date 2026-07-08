@@ -299,12 +299,12 @@ class STFTMaker():
 
 class FastMap:
 
-    # Default extents in WGS84
+    # Default extents in WGS84 (all of New Zealand)
     default_extents = {
-        'max_longitude': 174.0,
-        'min_longitude': 173.0,
-        'max_latitude': -41.0,
-        'min_latitude': -41.5
+        'max_longitude': 179.0,
+        'min_longitude': 166.0,
+        'max_latitude': -34.0,
+        'min_latitude': -47.5
     }
 
     def __init__(
