@@ -2362,6 +2362,26 @@ class AnnotationSession:
         # Re-position pointer to undone file
         self._current_index = last_file
 
+    def reset_current(self):
+        """Reset the current file to pending and remove its annotations."""
+        if self._current_index is None:
+            return
+        filename = self._current_index
+
+        self.df_meta.at[filename, "status"] = "pending"
+        self.df_meta.at[filename, "reviewed_on"] = pd.NaT
+        self.df_meta.at[filename, "reviewed_by"] = pd.NA
+
+        while filename in self._completed_stack:
+            self._completed_stack.remove(filename)
+
+        self.df_labels = self.df_labels[self.df_labels['Filename'] != filename]
+
+        df_meta_done = self.df_meta.loc[self.df_meta["status"] == "done", self.meta_headers]
+        df_labels_done = self.df_labels[self.df_labels['Filename'].isin(df_meta_done['filename'])]
+        self._save(self.new_meta_filepath, df_meta_done)
+        self._save(self.new_labels_filepath, df_labels_done)
+
     # -----------------------------
     # Persistence
     # -----------------------------

@@ -92,11 +92,8 @@ class AnnotationDesktopWindow(tk.Toplevel):
 
         annotation_state = AnnotationState(all_classes=all_classes, max_visible=max_visible)
         default_class = "Unknown" if "Unknown" in all_classes else (all_classes[0] if all_classes else None)
-        if default_class is not None:
-            annotation_state.set_visible_classes([default_class])
-            annotation_state.current_label = default_class
-        else:
-            annotation_state.set_visible_classes([])
+        annotation_state.set_visible_classes(all_classes)
+        annotation_state.current_label = default_class
         annotation_state.common_to_ebird = namer.common_to_ebird_dict
         annotation_state.ebird_to_common = {v: k for k, v in namer.common_to_ebird_dict.items()}
 
@@ -133,40 +130,40 @@ class AnnotationDesktopWindow(tk.Toplevel):
         )
 
         self.annotator.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
+        self.annotator.fig.canvas.mpl_connect("draw_event", lambda e: self.after_idle(self._set_label_value))
 
     def _build_controls(self):
         frame = ttk.Frame(self, padding=12)
         frame.pack(fill="both", expand=True)
 
-        self.current_file_var = tk.StringVar(value="Current: -")
-        ttk.Label(frame, textvariable=self.current_file_var).pack(anchor="w")
+        top_row = ttk.Frame(frame)
+        top_row.pack(fill="x", pady=(0, 10))
+
+        self._file_combobox_filenames: list[str] = []
+        self.file_combo = ttk.Combobox(top_row, state="readonly", width=60)
+        self.file_combo.pack(side="left", padx=(0, 6))
+        self.file_combo.bind("<<ComboboxSelected>>", self._on_file_selected)
+
+        ttk.Button(top_row, text="Reload", command=self._load_current_sample).pack(side="left", padx=(0, 6))
+        ttk.Button(top_row, text="Skip", command=self._skip_current).pack(side="left", padx=(0, 6))
+        ttk.Button(top_row, text="Next", command=self._complete_current).pack(side="left", padx=(0, 6))
+        ttk.Button(top_row, text="Clear", command=self._clear_current).pack(side="left")
 
         self.summary_var = tk.StringVar(value="Finished: 0 | Pending: 0 | Total: 0")
-        ttk.Label(frame, textvariable=self.summary_var).pack(anchor="w", pady=(4, 10))
+        ttk.Label(frame, textvariable=self.summary_var).pack(anchor="w", pady=(0, 10))
 
-        ttk.Label(frame, text="New Class").pack(anchor="w")
+        new_class_row = ttk.Frame(frame)
+        new_class_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(new_class_row, text="New Class").pack(side="left")
         self.label_combo = ttk.Combobox(
-            frame,
+            new_class_row,
             values=self.annotation_state.get_visible_classes(),
             state="readonly",
             width=80,
         )
+        self.label_combo.pack(side="left", padx=(8, 6))
         self.label_combo.bind("<<ComboboxSelected>>", self._on_label_changed)
-        self.label_combo.pack(fill="x", pady=(0, 10))
-
-        class_frame = ttk.LabelFrame(frame, text="Classes")
-        class_frame.pack(fill="both", expand=True, pady=(0, 10))
-
-        self.class_listbox = tk.Listbox(
-            class_frame,
-            selectmode="multiple",
-            exportselection=False,
-            height=10,
-        )
-        self.class_listbox.pack(fill="both", expand=True, padx=8, pady=(8, 6))
-        for cls in self.annotation_state.get_all_classes():
-            self.class_listbox.insert("end", cls)
-        self.class_listbox.bind("<<ListboxSelect>>", self._on_visible_classes_changed)
+        ttk.Button(new_class_row, text="Undo", command=self._undo_box).pack(side="left")
 
         meta_frame = ttk.LabelFrame(frame, text="Annotation metadata")
         meta_frame.pack(fill="x", pady=(0, 10))
@@ -194,24 +191,15 @@ class AnnotationDesktopWindow(tk.Toplevel):
             command=self._on_audio_options_changed,
         ).pack(side="left")
 
-        button_row = ttk.Frame(frame)
-        button_row.pack(fill="x")
-
-        ttk.Button(button_row, text="Reload", command=self._load_current_sample).pack(side="left", padx=(0, 6))
-        ttk.Button(button_row, text="Skip", command=self._skip_current).pack(side="left", padx=(0, 6))
-        ttk.Button(button_row, text="Next", command=self._complete_current).pack(side="left", padx=(0, 6))
-        ttk.Button(button_row, text="Undo Last", command=self._undo_last_file).pack(side="left")
-
         ttk.Label(
             frame,
-            text="Shortcuts: Enter/Space = Next, N = Skip, Ctrl+Z = Undo last file",
+            text="Shortcuts: Enter/Space = Next, N = Skip, Ctrl+Z = Clear current file",
         ).pack(anchor="w", pady=(10, 0))
         ttk.Label(
             frame,
             text="Use right-click on spectrogram to set cursor/zoom. Map opens in its own window.",
         ).pack(anchor="w", pady=(2, 0))
 
-        self._sync_visible_class_listbox()
         self._set_metadata_controls()
         self._on_audio_options_changed()
 
@@ -253,33 +241,28 @@ class AnnotationDesktopWindow(tk.Toplevel):
         self.score_combo.set("Leave Empty" if self.annotation_state.score is None else str(self.annotation_state.score))
 
     def _set_label_value(self):
-        self.label_combo["values"] = self.annotation_state.get_visible_classes()
+        ebird_to_common = self.annotation_state.ebird_to_common
+        existing = set()
+
+        _, label_rows = self.session.current
+        if label_rows is not None and not label_rows.empty and 'Label' in label_rows.columns:
+            for lbl in label_rows['Label'].dropna():
+                existing.add(ebird_to_common.get(lbl, lbl))
+
+        for box in self.annotator.annotations.boxes:
+            lbl = box.get('Label')
+            if lbl:
+                existing.add(ebird_to_common.get(lbl, lbl))
+
+        all_classes = self.annotation_state.get_all_classes()
+        ordered = [c for c in all_classes if c in existing]
+        ordered += [c for c in all_classes if c not in existing]
+
+        self.label_combo['values'] = ordered
+
         label = self.annotation_state.current_label
-        if not label:
-            return
-        values = list(self.label_combo.cget("values"))
-        if label not in values:
-            values.append(label)
-            self.label_combo["values"] = values
-        self.label_combo.set(label)
-
-    def _sync_visible_class_listbox(self):
-        visible = set(self.annotation_state.get_visible_classes())
-        self.class_listbox.selection_clear(0, "end")
-        for i, cls in enumerate(self.annotation_state.get_all_classes()):
-            if cls in visible:
-                self.class_listbox.selection_set(i)
-
-    def _on_visible_classes_changed(self, _event=None):
-        selected_indices = self.class_listbox.curselection()
-        selected = [self.class_listbox.get(i) for i in selected_indices]
-        if not selected:
-            selected = ["Unknown"] if "Unknown" in self.annotation_state.get_all_classes() else []
-            if not selected and self.annotation_state.get_all_classes():
-                selected = [self.annotation_state.get_all_classes()[0]]
-        self.annotation_state.set_visible_classes(selected)
-        self._set_label_value()
-        self._sync_visible_class_listbox()
+        if label:
+            self.label_combo.set(label)
 
     def _update_summary(self):
         summary = self.session.summary()
@@ -293,16 +276,15 @@ class AnnotationDesktopWindow(tk.Toplevel):
     def _load_current_sample(self):
         meta_row, _ = self.session.current
         if meta_row is None:
-            self.current_file_var.set("Current: all files finished")
             self._update_summary()
+            self._update_file_combobox()
             return
 
         load_current_sample(self.session, self.annotator, self.paths, self.map_widget)
-        self.current_file_var.set(f"Current: {meta_row['filename']}")
-        self._sync_visible_class_listbox()
         self._set_label_value()
         self._set_metadata_controls()
         self._update_summary()
+        self._update_file_combobox()
 
     def _complete_current(self):
         try:
@@ -318,9 +300,41 @@ class AnnotationDesktopWindow(tk.Toplevel):
             messagebox.showinfo("Session complete", str(exc), parent=self)
         self._load_current_sample()
 
-    def _undo_last_file(self):
-        self.session.undo_last()
+    def _clear_current(self):
+        meta_row, _ = self.session.current
+        if meta_row is None:
+            return
+        self.session.reset_current()
         self._load_current_sample()
+
+    def _update_file_combobox(self):
+        df = self.session.df_meta
+        self._file_combobox_filenames = df['filename'].tolist()
+
+        self.file_combo['values'] = [
+            f"{fn} (done)" if status == "done" else f"{fn} (skipped)" if status == "skipped" else fn
+            for fn, status in zip(df['filename'], df['status'])
+        ]
+
+        if self.session._current_index is not None:
+            try:
+                idx = self._file_combobox_filenames.index(self.session._current_index)
+                self.file_combo.current(idx)
+            except ValueError:
+                pass
+
+    def _on_file_selected(self, _event=None):
+        idx = self.file_combo.current()
+        if idx < 0 or idx >= len(self._file_combobox_filenames):
+            return
+        filename = self._file_combobox_filenames[idx]
+        if filename != self.session._current_index:
+            self.session._current_index = filename
+        self._load_current_sample()
+
+    def _undo_box(self):
+        if self.annotator.annotations.undo():
+            self.annotator.fig.canvas.draw_idle()
 
     def _play_from_cursor(self):
         self.annotator.play_from_marker()
@@ -341,7 +355,7 @@ class AnnotationDesktopWindow(tk.Toplevel):
         elif key == "n":
             self._skip_current()
         elif key == "ctrl+z":
-            self._undo_last_file()
+            self._clear_current()
 
     def _on_close(self):
         try:
